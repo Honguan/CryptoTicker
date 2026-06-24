@@ -1,0 +1,400 @@
+using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.WebSockets;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using CryptoTicker.Core;
+
+namespace CryptoTicker.Desktop;
+
+public sealed class AppSettings
+{
+    public string Pair { get; set; } = "BTC/USDT";
+    public List<CustomSourceSettings> CustomSources { get; set; } = [];
+    public string AiEndpoint { get; set; } = "";
+    public string AiModel { get; set; } = "";
+    public string AiCredentialTarget { get; set; } = "CryptoTicker.AI";
+}
+
+public sealed class CustomSourceSettings
+{
+    public string Name { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string PricePath { get; set; } = "";
+    public string TimestampPath { get; set; } = "";
+    public string SecretHeaderName { get; set; } = "";
+    public string CredentialTarget { get; set; } = "";
+}
+
+public static class SettingsStore
+{
+    private static readonly string Path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CryptoTicker", "settings.json");
+
+    public static AppSettings Load()
+    {
+        try
+        {
+            return File.Exists(Path) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(Path)) ?? new AppSettings() : new AppSettings();
+        }
+        catch (JsonException)
+        {
+            return new AppSettings();
+        }
+    }
+
+    public static void Save(AppSettings settings)
+    {
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+        File.WriteAllText(Path, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+    }
+}
+
+public static class CredentialStore
+{
+    private const int GenericCredential = 1;
+    private const int LocalMachinePersistence = 2;
+
+    public static void Save(string target, string secret)
+    {
+        if (string.IsNullOrWhiteSpace(target) || string.IsNullOrEmpty(secret))
+        {
+            return;
+        }
+
+        var bytes = Encoding.Unicode.GetBytes(secret);
+        var pointer = Marshal.AllocCoTaskMem(bytes.Length);
+        try
+        {
+            Marshal.Copy(bytes, 0, pointer, bytes.Length);
+            var credential = new NativeCredential
+            {
+                Type = GenericCredential,
+                TargetName = target,
+                CredentialBlobSize = (uint)bytes.Length,
+                CredentialBlob = pointer,
+                Persist = LocalMachinePersistence,
+                UserName = target
+            };
+            if (!CredWrite(ref credential, 0))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(pointer);
+        }
+    }
+
+    public static string? Read(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target) || !CredRead(target, GenericCredential, 0, out var pointer))
+        {
+            return null;
+        }
+
+        try
+        {
+            var credential = Marshal.PtrToStructure<NativeCredential>(pointer);
+            return credential.CredentialBlobSize == 0 ? null : Marshal.PtrToStringUni(credential.CredentialBlob, (int)credential.CredentialBlobSize / 2);
+        }
+        finally
+        {
+            CredFree(pointer);
+        }
+    }
+
+    [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CredWrite([In] ref NativeCredential credential, uint flags);
+
+    [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CredRead(string target, int type, int flags, out IntPtr credential);
+
+    [DllImport("Advapi32.dll", SetLastError = true)]
+    private static extern void CredFree(IntPtr credential);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NativeCredential
+    {
+        public uint Flags;
+        public uint Type;
+        public string TargetName;
+        public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist;
+        public uint AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+}
+
+public sealed class MarketDataService : IDisposable
+{
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly ConcurrentDictionary<string, Quote> _quotes = new();
+    private CancellationTokenSource? _cancellation;
+
+    public event Action? QuotesChanged;
+    public event Action<string>? StatusChanged;
+
+    public Task StartAsync(AppSettings settings)
+    {
+        Dispose();
+        _cancellation = new CancellationTokenSource();
+        var token = _cancellation.Token;
+        var pair = settings.Pair;
+        _ = RunExchangeAsync("Binance", pair, token);
+        _ = RunExchangeAsync("OKX", pair, token);
+        _ = RunExchangeAsync("Bybit", pair, token);
+        foreach (var source in settings.CustomSources.Where(source => !string.IsNullOrWhiteSpace(source.Url) && !string.IsNullOrWhiteSpace(source.PricePath)))
+        {
+            _ = RunCustomSourceAsync(source, token);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public AggregationResult Aggregate() => QuoteAggregator.Aggregate(_quotes.Values, DateTimeOffset.UtcNow);
+
+    public void Dispose()
+    {
+        _cancellation?.Cancel();
+        _cancellation?.Dispose();
+        _cancellation = null;
+        _quotes.Clear();
+    }
+
+    private async Task RunExchangeAsync(string exchange, string pair, CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                using var socket = new ClientWebSocket();
+                await socket.ConnectAsync(ExchangeUri(exchange, pair), token);
+                var subscription = Subscription(exchange, pair);
+                if (subscription is not null)
+                {
+                    await socket.SendAsync(Encoding.UTF8.GetBytes(subscription), WebSocketMessageType.Text, true, token);
+                }
+
+                StatusChanged?.Invoke($"{exchange} 已連線");
+                var buffer = new byte[8192];
+                while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
+                {
+                    using var message = new MemoryStream();
+                    WebSocketReceiveResult result;
+                    do
+                    {
+                        result = await socket.ReceiveAsync(buffer, token);
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            break;
+                        }
+
+                        message.Write(buffer, 0, result.Count);
+                    }
+                    while (!result.EndOfMessage);
+
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        break;
+                    }
+
+                    var price = ReadTicker(exchange, Encoding.UTF8.GetString(message.ToArray()));
+                    if (price is not null)
+                    {
+                        Update(exchange, price.Value);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                StatusChanged?.Invoke($"{exchange} 中斷：{exception.Message}");
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task RunCustomSourceAsync(CustomSourceSettings source, CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        do
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
+                var secret = CredentialStore.Read(source.CredentialTarget);
+                if (!string.IsNullOrWhiteSpace(secret) && !string.IsNullOrWhiteSpace(source.SecretHeaderName))
+                {
+                    request.Headers.TryAddWithoutValidation(source.SecretHeaderName, secret);
+                }
+
+                using var response = await Http.SendAsync(request, token);
+                response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync(token);
+                var price = JsonPathReader.ReadDecimal(json, source.PricePath);
+                if (price is null)
+                {
+                    StatusChanged?.Invoke($"{source.Name} 找不到價格欄位");
+                }
+                else
+                {
+                    var updatedAt = string.IsNullOrWhiteSpace(source.TimestampPath)
+                        ? DateTimeOffset.UtcNow
+                        : JsonPathReader.ReadTimestamp(json, source.TimestampPath) ?? DateTimeOffset.UtcNow;
+                    Update(source.Name, price.Value, updatedAt);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                StatusChanged?.Invoke($"{source.Name} 失敗：{exception.Message}");
+            }
+        }
+        while (await timer.WaitForNextTickAsync(token));
+    }
+
+    private void Update(string source, decimal price, DateTimeOffset? updatedAt = null)
+    {
+        _quotes[source] = new Quote(source, price, updatedAt ?? DateTimeOffset.UtcNow);
+        QuotesChanged?.Invoke();
+    }
+
+    private static Uri ExchangeUri(string exchange, string pair) => exchange switch
+    {
+        "Binance" => new Uri($"wss://stream.binance.com:9443/ws/{pair.Replace("/", string.Empty).ToLowerInvariant()}@ticker"),
+        "OKX" => new Uri("wss://ws.okx.com:8443/ws/v5/public"),
+        _ => new Uri("wss://stream.bybit.com/v5/public/spot")
+    };
+
+    private static string? Subscription(string exchange, string pair) => exchange switch
+    {
+        "OKX" => JsonSerializer.Serialize(new { op = "subscribe", args = new[] { new { channel = "tickers", instId = pair.Replace('/', '-') } } }),
+        "Bybit" => JsonSerializer.Serialize(new { op = "subscribe", args = new[] { $"tickers.{pair.Replace("/", string.Empty)}" } }),
+        _ => null
+    };
+
+    private static decimal? ReadTicker(string exchange, string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return exchange switch
+        {
+            "Binance" => document.RootElement.TryGetProperty("c", out var binance) && decimal.TryParse(binance.GetString(), out var price) ? price : null,
+            "OKX" when document.RootElement.TryGetProperty("data", out var okx) && okx.GetArrayLength() > 0 && decimal.TryParse(okx[0].GetProperty("last").GetString(), out var price) => price,
+            "Bybit" when document.RootElement.TryGetProperty("data", out var bybit) && bybit.TryGetProperty("lastPrice", out var last) && decimal.TryParse(last.GetString(), out var price) => price,
+            _ => null
+        };
+    }
+}
+
+public static class CandleService
+{
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    public static async Task<decimal[]> GetAsync(string pair, string timeframe, CancellationToken token)
+    {
+        var compactPair = pair.Replace("/", string.Empty);
+        var okxPair = pair.Replace('/', '-');
+        var bybitInterval = timeframe switch { "1h" => "60", "4h" => "240", _ => "15" };
+        var requests = new (string Url, Func<string, decimal[]> Read)[]
+        {
+            ($"https://api.binance.com/api/v3/klines?symbol={compactPair}&interval={timeframe}&limit=200", CandleReader.ReadBinance),
+            ($"https://www.okx.com/api/v5/market/candles?instId={okxPair}&bar={timeframe}&limit=200", CandleReader.ReadOkx),
+            ($"https://api.bybit.com/v5/market/kline?category=spot&symbol={compactPair}&interval={bybitInterval}&limit=200", CandleReader.ReadBybit)
+        };
+
+        foreach (var request in requests)
+        {
+            try
+            {
+                var json = await Http.GetStringAsync(request.Url, token);
+                var closes = request.Read(json);
+                if (closes.Length >= 50)
+                {
+                    return closes;
+                }
+            }
+            catch (HttpRequestException)
+            {
+            }
+            catch (TaskCanceledException) when (!token.IsCancellationRequested)
+            {
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        throw new InvalidOperationException("所有 K 線來源皆不可用。");
+    }
+}
+
+public static class AiAnalysisService
+{
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    public static async Task<string> GenerateAsync(AppSettings settings, IReadOnlyDictionary<string, AnalysisResult> analyses, CancellationToken token)
+    {
+        var key = CredentialStore.Read(settings.AiCredentialTarget);
+        if (string.IsNullOrWhiteSpace(settings.AiEndpoint) || string.IsNullOrWhiteSpace(settings.AiModel) || string.IsNullOrWhiteSpace(key))
+        {
+            return "尚未完成 AI 端點、模型或金鑰設定。";
+        }
+
+        var summary = string.Join("；", analyses.Select(item => $"{item.Key}：{item.Value.Direction}，上漲機率 {item.Value.UpProbability}% ，RSI {item.Value.Rsi:F1}"));
+        var endpoint = settings.AiEndpoint.TrimEnd('/');
+        if (!endpoint.EndsWith("chat/completions", StringComparison.OrdinalIgnoreCase))
+        {
+            endpoint += "/v1/chat/completions";
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            model = settings.AiModel,
+            messages = new[]
+            {
+                new { role = "system", content = "你是加密貨幣市場資訊摘要助手。只解讀提供的技術資料，不提供投資指示。" },
+                new { role = "user", content = $"請用繁體中文簡短解讀：{summary}" }
+            }
+        });
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
+            using var response = await Http.SendAsync(request, token);
+            response.EnsureSuccessStatusCode();
+            return AiResponseReader.ReadContent(await response.Content.ReadAsStringAsync(token)) ?? "AI 未回傳文字內容。";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return $"AI 解讀失敗：{exception.Message}";
+        }
+    }
+}

@@ -1,0 +1,13 @@
+<Window x:Class="CryptoTicker.Desktop.FloatingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="185" Height="82" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Topmost="True" ShowInTaskbar="False">
+  <Border Background="#E9161B22" CornerRadius="40" Padding="16" BorderBrush="#FF3E4A59" BorderThickness="1">
+    <StackPanel MouseLeftButtonDown="OnMouseLeftButtonDown">
+      <TextBlock x:Name="PairText" Foreground="#FFB8C4D4" FontSize="12" Text="BTC/USDT" />
+      <TextBlock x:Name="PriceText" Foreground="White" FontSize="18" FontWeight="Bold" Text="資料不足" />
+      <TextBlock x:Name="DirectionText" Foreground="#FF7DD3FC" FontSize="12" Text="等待行情" />
+    </StackPanel>
+  </Border>
+</Window>
