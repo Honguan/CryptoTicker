@@ -9,11 +9,12 @@ public partial class FloatingWindow : Window
 
     public event Action? OpenRequested;
 
-    public void SetQuote(string pair, decimal? price, string direction)
+    public void SetQuote(string pair, decimal? price, string direction, string color)
     {
         PairText.Text = pair;
         PriceText.Text = price is null ? "資料不足" : price.Value.ToString("N4");
         DirectionText.Text = direction;
+        DirectionText.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color));
     }
 
     private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs eventArgs)

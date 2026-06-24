@@ -51,6 +51,11 @@
           <TextBox x:Name="CustomCredentialBox" Margin="0,4" ToolTip="Windows 認證名稱" />
           <PasswordBox x:Name="CustomSecretBox" Margin="0,4" ToolTip="要保存的秘密（選填）" />
           <Button Content="儲存自訂來源" Click="OnSaveCustomSource" HorizontalAlignment="Left" />
+          <TextBlock Text="價格警示" FontWeight="Bold" Margin="0,12,0,0" />
+          <ComboBox x:Name="AlertDirectionBox" SelectedIndex="0" Margin="0,4"><ComboBoxItem Content="上破" /><ComboBoxItem Content="下破" /></ComboBox>
+          <TextBox x:Name="AlertTargetBox" Margin="0,4" ToolTip="目標價" />
+          <StackPanel Orientation="Horizontal"><Button Content="新增警示" Click="OnAddAlert" /><Button Content="刪除選取警示" Click="OnDeleteAlert" /></StackPanel>
+          <ListBox x:Name="AlertList" Height="90" />
         </StackPanel>
         <StackPanel Grid.Column="1">
           <TextBlock Text="OpenAI 相容 API" FontWeight="Bold" />
@@ -59,6 +64,8 @@
           <TextBox x:Name="AiCredentialBox" Margin="0,4" ToolTip="Windows 認證名稱" />
           <PasswordBox x:Name="AiSecretBox" Margin="0,4" ToolTip="要保存的 API 金鑰（選填）" />
           <Button Content="儲存 AI 設定" Click="OnSaveAiSettings" HorizontalAlignment="Left" />
+          <TextBlock Text="方向顏色" FontWeight="Bold" Margin="0,12,0,0" />
+          <StackPanel Orientation="Horizontal"><Button x:Name="UpColorButton" Content="上漲色" Click="OnPickUpColor" /><Button x:Name="DownColorButton" Content="下跌色" Click="OnPickDownColor" /></StackPanel>
           <TextBlock Text="僅供資訊參考，不構成投資建議。" Foreground="DarkOrange" TextWrapping="Wrap" Margin="0,22,0,0" />
         </StackPanel>
       </Grid>

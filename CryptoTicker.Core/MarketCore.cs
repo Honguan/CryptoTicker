@@ -147,6 +147,31 @@ public enum Direction
     Neutral
 }
 
+public enum AlertDirection
+{
+    Above,
+    Below
+}
+
+public sealed record PriceAlert(string Pair, AlertDirection Direction, decimal TargetPrice);
+
+public static class AlertEvaluator
+{
+    public static bool Crossed(PriceAlert alert, decimal previousPrice, decimal currentPrice) => alert.Direction switch
+    {
+        AlertDirection.Above => previousPrice < alert.TargetPrice && currentPrice >= alert.TargetPrice,
+        AlertDirection.Below => previousPrice > alert.TargetPrice && currentPrice <= alert.TargetPrice,
+        _ => false
+    };
+}
+
+public static class SignalTransition
+{
+    public static bool ShouldNotify(Direction previous, Direction current) =>
+        (previous == Direction.Up && current == Direction.Down) ||
+        (previous == Direction.Down && current == Direction.Up);
+}
+
 public sealed record AnalysisResult(Direction Direction, int UpProbability, decimal Score, decimal Ema20, decimal Ema50, decimal Rsi, decimal Macd);
 
 public static class MarketAnalyzer

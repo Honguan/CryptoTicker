@@ -5,6 +5,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using CryptoTicker.Core;
+using Forms = System.Windows.Forms;
 
 namespace CryptoTicker.Desktop;
 
@@ -16,6 +17,9 @@ public partial class MainWindow : Window
     private AppSettings _settings = new();
     private decimal[] _chartValues = [];
     private string _direction = "等待分析";
+    private decimal? _previousPrice;
+    private Direction? _lastSignal;
+    private readonly DispatcherTimer _analysisTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private bool _analysisRequested;
 
     public MainWindow()
@@ -24,14 +28,16 @@ public partial class MainWindow : Window
         _marketData.QuotesChanged += UpdateQuote;
         _marketData.StatusChanged += status => Dispatcher.BeginInvoke(() => StatusText.Text = status);
         _displayTimer.Tick += (_, _) => UpdateQuote();
+        _analysisTimer.Tick += async (_, _) => await RefreshAnalysisAsync();
         ChartCanvas.SizeChanged += (_, _) => DrawChart();
     }
 
-    public event Action<string, decimal?, string>? PriceChanged;
+    public event Action<string, decimal?, string, string>? PriceChanged;
 
     public void Stop()
     {
         _displayTimer.Stop();
+        _analysisTimer.Stop();
         _marketData.Dispose();
     }
 
@@ -44,6 +50,9 @@ public partial class MainWindow : Window
         AiCredentialBox.Text = _settings.AiCredentialTarget;
         LoadCustomSource();
         _displayTimer.Start();
+        _analysisTimer.Start();
+        RenderAlerts();
+        ApplyColors();
         await RestartAsync();
     }
 
@@ -112,6 +121,35 @@ public partial class MainWindow : Window
         StatusText.Text = "已儲存 AI 設定。";
     }
 
+    private void OnAddAlert(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!decimal.TryParse(AlertTargetBox.Text, out var target) || target <= 0)
+        {
+            StatusText.Text = "請輸入有效目標價。";
+            return;
+        }
+
+        var direction = AlertDirectionBox.SelectedIndex == 0 ? AlertDirection.Above : AlertDirection.Below;
+        _settings.Alerts.Add(new PriceAlert(_settings.Pair, direction, target));
+        SettingsStore.Save(_settings);
+        AlertTargetBox.Clear();
+        RenderAlerts();
+    }
+
+    private void OnDeleteAlert(object sender, RoutedEventArgs eventArgs)
+    {
+        if (AlertList.SelectedItem is PriceAlert alert)
+        {
+            _settings.Alerts.Remove(alert);
+            SettingsStore.Save(_settings);
+            RenderAlerts();
+        }
+    }
+
+    private void OnPickUpColor(object sender, RoutedEventArgs eventArgs) => PickColor(true);
+
+    private void OnPickDownColor(object sender, RoutedEventArgs eventArgs) => PickColor(false);
+
     private void OnClosing(object? sender, CancelEventArgs eventArgs)
     {
         if (!((App)System.Windows.Application.Current).IsExiting)
@@ -124,6 +162,8 @@ public partial class MainWindow : Window
     private async Task RestartAsync()
     {
         _analyses.Clear();
+        _previousPrice = null;
+        _lastSignal = null;
         _analysisRequested = false;
         AnalysisList.Items.Clear();
         _chartValues = [];
@@ -157,6 +197,13 @@ public partial class MainWindow : Window
                 {
                     _chartValues = closes;
                     _direction = DirectionText(analysis.Direction);
+                    if (_lastSignal is not null && SignalTransition.ShouldNotify(_lastSignal.Value, analysis.Direction))
+                    {
+                        ((App)System.Windows.Application.Current).Notify("技術方向轉換", $"{_settings.Pair}：{DirectionText(analysis.Direction)}");
+                    }
+
+                    _lastSignal = analysis.Direction;
+                    AnalysisList.Foreground = BrushForDirection(analysis.Direction);
                     DrawChart();
                 }
             }
@@ -187,7 +234,19 @@ public partial class MainWindow : Window
             var error = source.Health == SourceHealth.Error ? $"：{source.LastError}" : string.Empty;
             SourceList.Items.Add($"{source.Source}｜{SourceHealthText(source.Health)}｜{updatedAt}{error}");
         }
-        PriceChanged?.Invoke(_settings.Pair, aggregate.Price, _direction);
+        PriceChanged?.Invoke(_settings.Pair, aggregate.Price, _direction, ColorForDirection(_lastSignal ?? Direction.Neutral));
+        if (aggregate.Price is decimal price)
+        {
+            if (_previousPrice is decimal previous)
+            {
+                foreach (var alert in _settings.Alerts.Where(alert => alert.Pair == _settings.Pair && AlertEvaluator.Crossed(alert, previous, price)))
+                {
+                    ((App)System.Windows.Application.Current).Notify("價格警示", $"{alert.Pair} {AlertText(alert)}：{price:N4}");
+                }
+            }
+
+            _previousPrice = price;
+        }
         if (aggregate.Price is not null && !_analysisRequested)
         {
             _ = RefreshAnalysisAsync();
@@ -237,6 +296,35 @@ public partial class MainWindow : Window
         CustomCredentialBox.Text = source.CredentialTarget;
     }
 
+    private void RenderAlerts()
+    {
+        AlertList.Items.Clear();
+        foreach (var alert in _settings.Alerts)
+        {
+            AlertList.Items.Add(alert);
+        }
+    }
+
+    private void PickColor(bool up)
+    {
+        using var dialog = new Forms.ColorDialog();
+        if (dialog.ShowDialog() != Forms.DialogResult.OK)
+        {
+            return;
+        }
+
+        var color = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        if (up) _settings.UpColor = color; else _settings.DownColor = color;
+        SettingsStore.Save(_settings);
+        ApplyColors();
+    }
+
+    private void ApplyColors()
+    {
+        UpColorButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(_settings.UpColor));
+        DownColorButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(_settings.DownColor));
+    }
+
     private static string NormalizePair(string pair)
     {
         var parts = pair.Trim().ToUpperInvariant().Replace('-', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -245,10 +333,21 @@ public partial class MainWindow : Window
 
     private static string DirectionText(Direction direction) => direction switch
     {
-        Direction.Up => "上漲",
-        Direction.Down => "下跌",
-        _ => "中性"
+        Direction.Up => "▲ 上漲",
+        Direction.Down => "▼ 下跌",
+        _ => "● 中性"
     };
+
+    private static string AlertText(PriceAlert alert) => alert.Direction == AlertDirection.Above ? "上破" : "下破";
+
+    private string ColorForDirection(Direction direction) => direction switch
+    {
+        Direction.Up => _settings.UpColor,
+        Direction.Down => _settings.DownColor,
+        _ => "#6B7280"
+    };
+
+    private System.Windows.Media.Brush BrushForDirection(Direction direction) => new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ColorForDirection(direction)));
 
     private static string SourceHealthText(SourceHealth health) => health switch
     {

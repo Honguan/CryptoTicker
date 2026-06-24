@@ -101,6 +101,25 @@ Run("來源狀態保留最後有效報價", () =>
     Equal("Stale", stateType.GetMethod("Snapshot")!.Invoke(state, [now.AddSeconds(16)])!.GetType().GetProperty("Health")!.GetValue(stateType.GetMethod("Snapshot")!.Invoke(state, [now.AddSeconds(16)]))!.ToString());
 });
 
+Run("價格警示只在跨越目標時觸發", () =>
+{
+    var alertType = RequiredType("CryptoTicker.Core.PriceAlert");
+    var directionType = RequiredType("CryptoTicker.Core.AlertDirection");
+    var evaluator = RequiredType("CryptoTicker.Core.AlertEvaluator");
+    var above = Enum.Parse(directionType, "Above");
+    var alert = Activator.CreateInstance(alertType, "BTC/USDT", above, 100m)!;
+    Equal(true, evaluator.GetMethod("Crossed")!.Invoke(null, [alert, 99m, 100m]));
+    Equal(false, evaluator.GetMethod("Crossed")!.Invoke(null, [alert, 100m, 101m]));
+});
+
+Run("技術方向僅在漲跌互轉時通知", () =>
+{
+    var transition = RequiredType("CryptoTicker.Core.SignalTransition");
+    var direction = RequiredType("CryptoTicker.Core.Direction");
+    Equal(true, transition.GetMethod("ShouldNotify")!.Invoke(null, [Enum.Parse(direction, "Up"), Enum.Parse(direction, "Down")]));
+    Equal(false, transition.GetMethod("ShouldNotify")!.Invoke(null, [Enum.Parse(direction, "Up"), Enum.Parse(direction, "Neutral")]));
+});
+
 return failures == 0 ? 0 : 1;
 
 Type RequiredType(string name) => assembly.GetType(name) ?? throw new InvalidOperationException($"缺少型別：{name}");

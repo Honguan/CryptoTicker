@@ -18,6 +18,9 @@ public sealed class AppSettings
     public string AiEndpoint { get; set; } = "";
     public string AiModel { get; set; } = "";
     public string AiCredentialTarget { get; set; } = "CryptoTicker.AI";
+    public List<PriceAlert> Alerts { get; set; } = [];
+    public string UpColor { get; set; } = "#16A34A";
+    public string DownColor { get; set; } = "#DC2626";
 }
 
 public sealed class CustomSourceSettings

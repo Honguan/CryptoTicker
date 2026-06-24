@@ -49,6 +49,8 @@ public partial class App : System.Windows.Application
         _mainWindow.Activate();
     }
 
+    public void Notify(string title, string message) => _trayIcon?.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Info);
+
     private void ExitApplication()
     {
         IsExiting = true;
