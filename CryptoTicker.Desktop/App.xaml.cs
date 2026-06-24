@@ -24,7 +24,7 @@ public partial class App : System.Windows.Application
         menu.Items.Add("結束", null, (_, _) => ExitApplication());
         _trayIcon = new Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = new System.Drawing.Icon(System.IO.Path.Combine(AppContext.BaseDirectory, "app-icon.ico")),
             Text = "加密貨幣行情",
             Visible = true,
             ContextMenuStrip = menu

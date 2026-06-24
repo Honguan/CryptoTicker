@@ -8,6 +8,7 @@ AppId={{17C32E42-747A-46D7-9A31-AD2D3DC39771}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+SetupIconFile=..\CryptoTicker.Desktop\Assets\app-icon.ico
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 PrivilegesRequired=lowest
