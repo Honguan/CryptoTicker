@@ -7,14 +7,52 @@ public sealed record Quote(string Source, decimal Price, DateTimeOffset UpdatedA
 
 public sealed record AggregationResult(decimal? Price, int ActiveSourceCount);
 
+public enum SourceHealth
+{
+    Fresh,
+    Stale,
+    Error
+}
+
+public sealed record SourceSnapshot(string Source, decimal? LastPrice, DateTimeOffset? LastUpdatedAt, string? LastError, SourceHealth Health);
+
+public sealed class SourceState(string source)
+{
+    private decimal? _lastPrice;
+    private DateTimeOffset? _lastUpdatedAt;
+    private string? _lastError;
+
+    public void RecordSuccess(decimal price, DateTimeOffset updatedAt)
+    {
+        if (price <= 0 || updatedAt > DateTimeOffset.UtcNow.AddMinutes(1))
+        {
+            return;
+        }
+
+        _lastPrice = price;
+        _lastUpdatedAt = updatedAt;
+        _lastError = null;
+    }
+
+    public void RecordFailure(string error) => _lastError = error;
+
+    public SourceSnapshot Snapshot(DateTimeOffset now)
+    {
+        var health = _lastUpdatedAt is null || now - _lastUpdatedAt > QuoteAggregator.Freshness
+            ? SourceHealth.Stale
+            : _lastError is not null ? SourceHealth.Error : SourceHealth.Fresh;
+        return new SourceSnapshot(source, _lastPrice, _lastUpdatedAt, _lastError, health);
+    }
+}
+
 public static class QuoteAggregator
 {
-    private static readonly TimeSpan Freshness = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan Freshness = TimeSpan.FromSeconds(15);
 
     public static AggregationResult Aggregate(IEnumerable<Quote> quotes, DateTimeOffset now)
     {
         var prices = quotes
-            .Where(quote => now - quote.UpdatedAt <= Freshness && quote.UpdatedAt <= now)
+            .Where(quote => quote.Price > 0 && now - quote.UpdatedAt <= Freshness && quote.UpdatedAt <= now)
             .Select(quote => quote.Price)
             .Order()
             .ToArray();
@@ -31,6 +69,13 @@ public static class QuoteAggregator
 
         return new AggregationResult(price, prices.Length);
     }
+}
+
+public static class MarketPriceParser
+{
+    public static decimal? Read(string? value) => decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var price) && price > 0
+        ? price
+        : null;
 }
 
 public static class JsonPathReader
@@ -116,9 +161,7 @@ public static class MarketAnalyzer
         var ema20 = Ema(closes, 20);
         var ema50 = Ema(closes, 50);
         var rsi = Rsi(closes, 14);
-        var macdValues = closes.Select((_, index) => Ema(closes.Take(index + 1).ToArray(), 12) - Ema(closes.Take(index + 1).ToArray(), 26)).ToArray();
-        var macd = macdValues[^1];
-        var signal = Ema(macdValues, 9);
+        var (macd, signal) = Macd(closes);
         var score = new[] { Score(ema20, ema50), Score(rsi, 55m, 45m), Score(macd, signal) }.Select(value => (decimal)value).Average();
         var direction = score >= 0.34m ? Direction.Up : score <= -0.34m ? Direction.Down : Direction.Neutral;
         var probability = (int)decimal.Round((score + 1m) * 50m, MidpointRounding.AwayFromZero);
@@ -162,6 +205,22 @@ public static class MarketAnalyzer
         }
 
         return losses == 0m ? 100m : 100m - 100m / (1m + gains / losses);
+    }
+
+    private static (decimal Macd, decimal Signal) Macd(IReadOnlyList<decimal> values)
+    {
+        var ema12 = values[0];
+        var ema26 = values[0];
+        var signal = 0m;
+        for (var index = 1; index < values.Count; index++)
+        {
+            ema12 += (values[index] - ema12) * 2m / 13m;
+            ema26 += (values[index] - ema26) * 2m / 27m;
+            var macd = ema12 - ema26;
+            signal += (macd - signal) * 2m / 10m;
+        }
+
+        return (ema12 - ema26, signal);
     }
 
     private static int Score(decimal actual, decimal positiveThreshold, decimal negativeThreshold) => actual > positiveThreshold ? 1 : actual < negativeThreshold ? -1 : 0;

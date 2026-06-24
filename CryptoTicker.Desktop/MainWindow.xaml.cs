@@ -180,6 +180,13 @@ public partial class MainWindow : Window
         var aggregate = _marketData.Aggregate();
         PriceText.Text = aggregate.Price is null ? "資料不足" : aggregate.Price.Value.ToString("N4");
         StatusText.Text = aggregate.Price is null ? $"有效來源 {aggregate.ActiveSourceCount}/2" : $"整合 {aggregate.ActiveSourceCount} 個來源";
+        SourceList.Items.Clear();
+        foreach (var source in _marketData.Sources())
+        {
+            var updatedAt = source.LastUpdatedAt?.ToLocalTime().ToString("HH:mm:ss") ?? "無報價";
+            var error = source.Health == SourceHealth.Error ? $"：{source.LastError}" : string.Empty;
+            SourceList.Items.Add($"{source.Source}｜{SourceHealthText(source.Health)}｜{updatedAt}{error}");
+        }
         PriceChanged?.Invoke(_settings.Pair, aggregate.Price, _direction);
         if (aggregate.Price is not null && !_analysisRequested)
         {
@@ -241,5 +248,12 @@ public partial class MainWindow : Window
         Direction.Up => "上漲",
         Direction.Down => "下跌",
         _ => "中性"
+    };
+
+    private static string SourceHealthText(SourceHealth health) => health switch
+    {
+        SourceHealth.Fresh => "新鮮",
+        SourceHealth.Error => "錯誤",
+        _ => "過期"
     };
 }

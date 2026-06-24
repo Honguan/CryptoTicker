@@ -138,7 +138,7 @@ public static class CredentialStore
 public sealed class MarketDataService : IDisposable
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
-    private readonly ConcurrentDictionary<string, Quote> _quotes = new();
+    private readonly ConcurrentDictionary<string, SourceState> _sources = new();
     private CancellationTokenSource? _cancellation;
 
     public event Action? QuotesChanged;
@@ -150,25 +150,41 @@ public sealed class MarketDataService : IDisposable
         _cancellation = new CancellationTokenSource();
         var token = _cancellation.Token;
         var pair = settings.Pair;
-        _ = RunExchangeAsync("Binance", pair, token);
-        _ = RunExchangeAsync("OKX", pair, token);
-        _ = RunExchangeAsync("Bybit", pair, token);
+        foreach (var exchange in new[] { "Binance", "OKX", "Bybit" })
+        {
+            _sources.TryAdd(exchange, new SourceState(exchange));
+            _ = RunExchangeAsync(exchange, pair, token);
+        }
         foreach (var source in settings.CustomSources.Where(source => !string.IsNullOrWhiteSpace(source.Url) && !string.IsNullOrWhiteSpace(source.PricePath)))
         {
+            _sources.TryAdd(source.Name, new SourceState(source.Name));
             _ = RunCustomSourceAsync(source, token);
         }
 
         return Task.CompletedTask;
     }
 
-    public AggregationResult Aggregate() => QuoteAggregator.Aggregate(_quotes.Values, DateTimeOffset.UtcNow);
+    public AggregationResult Aggregate()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return QuoteAggregator.Aggregate(_sources.Values
+            .Select(source => source.Snapshot(now))
+            .Where(source => source.LastPrice is not null && source.LastUpdatedAt is not null)
+            .Select(source => new Quote(source.Source, source.LastPrice!.Value, source.LastUpdatedAt!.Value)), now);
+    }
+
+    public IReadOnlyList<SourceSnapshot> Sources()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return _sources.Values.Select(source => source.Snapshot(now)).OrderBy(source => source.Source).ToArray();
+    }
 
     public void Dispose()
     {
         _cancellation?.Cancel();
         _cancellation?.Dispose();
         _cancellation = null;
-        _quotes.Clear();
+        _sources.Clear();
     }
 
     private async Task RunExchangeAsync(string exchange, string pair, CancellationToken token)
@@ -221,7 +237,7 @@ public sealed class MarketDataService : IDisposable
             }
             catch (Exception exception)
             {
-                StatusChanged?.Invoke($"{exchange} 中斷：{exception.Message}");
+                Fail(exchange, exception.Message);
             }
 
             try
@@ -255,7 +271,7 @@ public sealed class MarketDataService : IDisposable
                 var price = JsonPathReader.ReadDecimal(json, source.PricePath);
                 if (price is null)
                 {
-                    StatusChanged?.Invoke($"{source.Name} 找不到價格欄位");
+                    Fail(source.Name, "找不到有效價格欄位。");
                 }
                 else
                 {
@@ -271,7 +287,7 @@ public sealed class MarketDataService : IDisposable
             }
             catch (Exception exception)
             {
-                StatusChanged?.Invoke($"{source.Name} 失敗：{exception.Message}");
+                Fail(source.Name, exception.Message);
             }
         }
         while (await timer.WaitForNextTickAsync(token));
@@ -279,7 +295,23 @@ public sealed class MarketDataService : IDisposable
 
     private void Update(string source, decimal price, DateTimeOffset? updatedAt = null)
     {
-        _quotes[source] = new Quote(source, price, updatedAt ?? DateTimeOffset.UtcNow);
+        var timestamp = updatedAt ?? DateTimeOffset.UtcNow;
+        var state = _sources.GetOrAdd(source, name => new SourceState(name));
+        if (price <= 0 || timestamp > DateTimeOffset.UtcNow)
+        {
+            state.RecordFailure("收到無效報價或未來時間戳記。");
+            QuotesChanged?.Invoke();
+            return;
+        }
+
+        state.RecordSuccess(price, timestamp);
+        QuotesChanged?.Invoke();
+    }
+
+    private void Fail(string source, string error)
+    {
+        _sources.GetOrAdd(source, name => new SourceState(name)).RecordFailure(error);
+        StatusChanged?.Invoke($"{source} 失敗：{error}");
         QuotesChanged?.Invoke();
     }
 
@@ -302,9 +334,9 @@ public sealed class MarketDataService : IDisposable
         using var document = JsonDocument.Parse(json);
         return exchange switch
         {
-            "Binance" => document.RootElement.TryGetProperty("c", out var binance) && decimal.TryParse(binance.GetString(), out var price) ? price : null,
-            "OKX" when document.RootElement.TryGetProperty("data", out var okx) && okx.GetArrayLength() > 0 && decimal.TryParse(okx[0].GetProperty("last").GetString(), out var price) => price,
-            "Bybit" when document.RootElement.TryGetProperty("data", out var bybit) && bybit.TryGetProperty("lastPrice", out var last) && decimal.TryParse(last.GetString(), out var price) => price,
+            "Binance" when document.RootElement.TryGetProperty("c", out var binance) => MarketPriceParser.Read(binance.GetString()),
+            "OKX" when document.RootElement.TryGetProperty("data", out var okx) && okx.GetArrayLength() > 0 => MarketPriceParser.Read(okx[0].GetProperty("last").GetString()),
+            "Bybit" when document.RootElement.TryGetProperty("data", out var bybit) && bybit.TryGetProperty("lastPrice", out var last) => MarketPriceParser.Read(last.GetString()),
             _ => null
         };
     }

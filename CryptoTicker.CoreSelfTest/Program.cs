@@ -65,6 +65,42 @@ Run("可解析 Binance K 線與 AI 回應", () =>
     Equal("市場偏多", content);
 });
 
+Run("整合價格略過非正與未來報價", () =>
+{
+    var quote = RequiredType("CryptoTicker.Core.Quote");
+    var aggregator = RequiredType("CryptoTicker.Core.QuoteAggregator");
+    var now = DateTimeOffset.UtcNow;
+    var quotes = Array.CreateInstance(quote, 4);
+    quotes.SetValue(Activator.CreateInstance(quote, "Bad", 0m, now)!, 0);
+    quotes.SetValue(Activator.CreateInstance(quote, "Future", 999m, now.AddSeconds(1))!, 1);
+    quotes.SetValue(Activator.CreateInstance(quote, "Binance", 100m, now)!, 2);
+    quotes.SetValue(Activator.CreateInstance(quote, "OKX", 110m, now)!, 3);
+
+    var result = aggregator.GetMethod("Aggregate")!.Invoke(null, [quotes, now]);
+    Equal(105m, (decimal)result!.GetType().GetProperty("Price")!.GetValue(result)!);
+});
+
+Run("行情解析不受系統地區設定影響", () =>
+{
+    var parser = RequiredType("CryptoTicker.Core.MarketPriceParser");
+    Equal(123.45m, parser.GetMethod("Read")!.Invoke(null, ["123.45"]));
+    Equal(null, parser.GetMethod("Read")!.Invoke(null, ["0"]));
+});
+
+Run("來源狀態保留最後有效報價", () =>
+{
+    var stateType = RequiredType("CryptoTicker.Core.SourceState");
+    var now = DateTimeOffset.UtcNow;
+    var state = Activator.CreateInstance(stateType, "Binance")!;
+    stateType.GetMethod("RecordSuccess")!.Invoke(state, [100m, now]);
+    Equal("Fresh", stateType.GetMethod("Snapshot")!.Invoke(state, [now])!.GetType().GetProperty("Health")!.GetValue(stateType.GetMethod("Snapshot")!.Invoke(state, [now]))!.ToString());
+    stateType.GetMethod("RecordFailure")!.Invoke(state, ["逾時"]);
+    var failed = stateType.GetMethod("Snapshot")!.Invoke(state, [now]);
+    Equal("Error", failed!.GetType().GetProperty("Health")!.GetValue(failed)!.ToString());
+    Equal(100m, failed.GetType().GetProperty("LastPrice")!.GetValue(failed));
+    Equal("Stale", stateType.GetMethod("Snapshot")!.Invoke(state, [now.AddSeconds(16)])!.GetType().GetProperty("Health")!.GetValue(stateType.GetMethod("Snapshot")!.Invoke(state, [now.AddSeconds(16)]))!.ToString());
+});
+
 return failures == 0 ? 0 : 1;
 
 Type RequiredType(string name) => assembly.GetType(name) ?? throw new InvalidOperationException($"缺少型別：{name}");

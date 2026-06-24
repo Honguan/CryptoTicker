@@ -28,6 +28,8 @@
         <TextBlock Text="分析結果" FontWeight="Bold" FontSize="16" />
         <ListBox x:Name="AnalysisList" MinHeight="165" Margin="0,6,0,8" />
         <Button Content="重新整理分析" Click="OnRefreshAnalysis" HorizontalAlignment="Left" />
+        <TextBlock Text="來源狀態" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
+        <ListBox x:Name="SourceList" Height="100" />
         <TextBlock Text="AI 解讀" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
         <TextBox x:Name="AiText" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" Height="130" VerticalScrollBarVisibility="Auto" />
         <Button Content="產生 AI 解讀" Click="OnGenerateAi" HorizontalAlignment="Left" />
