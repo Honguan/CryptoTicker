@@ -13,6 +13,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs eventArgs)
     {
+        RegisterCrashLogging();
         base.OnStartup(eventArgs);
 
         _mainWindow = new MainWindow();
@@ -24,7 +25,7 @@ public partial class App : System.Windows.Application
         menu.Items.Add("結束", null, (_, _) => ExitApplication());
         _trayIcon = new Forms.NotifyIcon
         {
-            Icon = new System.Drawing.Icon(System.IO.Path.Combine(AppContext.BaseDirectory, "app-icon.ico")),
+            Icon = LoadTrayIcon(),
             Text = "加密貨幣行情",
             Visible = true,
             ContextMenuStrip = menu
@@ -50,6 +51,60 @@ public partial class App : System.Windows.Application
     }
 
     public void Notify(string title, string message) => _trayIcon?.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Info);
+
+    private static System.Drawing.Icon LoadTrayIcon()
+    {
+        try
+        {
+            var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.ico");
+            if (System.IO.File.Exists(iconPath))
+            {
+                return new System.Drawing.Icon(iconPath);
+            }
+
+            LogCrash(new System.IO.FileNotFoundException("Tray icon not found.", iconPath));
+        }
+        catch (Exception exception)
+        {
+            LogCrash(exception);
+        }
+
+        return System.Drawing.SystemIcons.Application;
+    }
+
+    private static void RegisterCrashLogging()
+    {
+        Current.DispatcherUnhandledException += (_, eventArgs) => LogCrash(eventArgs.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+        {
+            if (eventArgs.ExceptionObject is Exception exception)
+            {
+                LogCrash(exception);
+            }
+            else
+            {
+                LogCrash(new Exception(eventArgs.ExceptionObject?.ToString() ?? "Unknown unhandled exception"));
+            }
+        };
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) => LogCrash(eventArgs.Exception);
+    }
+
+    private static void LogCrash(Exception exception)
+    {
+        try
+        {
+            var directory = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CryptoTicker");
+            System.IO.Directory.CreateDirectory(directory);
+            var version = typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown";
+            var text = $"[{DateTimeOffset.Now:O}] Version {version}{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}";
+            System.IO.File.AppendAllText(System.IO.Path.Combine(directory, "crash.log"), text);
+        }
+        catch
+        {
+        }
+    }
 
     private void ExitApplication()
     {
