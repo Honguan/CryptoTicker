@@ -12,7 +12,7 @@
     <StackPanel Orientation="Horizontal">
       <TextBlock VerticalAlignment="Center" Text="交易對" Margin="0,0,6,0" />
       <TextBox x:Name="PairBox" Width="110" Text="BTC/USDT" />
-      <Button Content="套用" Click="OnApply" />
+      <Button x:Name="ApplyButton" Content="套用" Click="OnApply" />
       <TextBlock x:Name="PriceText" VerticalAlignment="Center" FontSize="22" FontWeight="Bold" Margin="16,0,0,0" />
       <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="Gray" Margin="12,0,0,0" />
     </StackPanel>
@@ -27,14 +27,14 @@
       <StackPanel Grid.Column="1">
         <TextBlock Text="分析結果" FontWeight="Bold" FontSize="16" />
         <ListBox x:Name="AnalysisList" MinHeight="165" Margin="0,6,0,8" />
-        <Button Content="重新整理分析" Click="OnRefreshAnalysis" HorizontalAlignment="Left" />
+        <Button x:Name="RefreshAnalysisButton" Content="重新整理分析" Click="OnRefreshAnalysis" HorizontalAlignment="Left" />
         <TextBlock Text="多交易對看板" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
         <ListBox x:Name="WatchList" Height="110" />
         <TextBlock Text="來源狀態" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
         <ListBox x:Name="SourceList" Height="80" />
         <TextBlock Text="AI 解讀" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
         <TextBox x:Name="AiText" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" Height="130" VerticalScrollBarVisibility="Auto" />
-        <Button Content="產生 AI 解讀" Click="OnGenerateAi" HorizontalAlignment="Left" />
+        <Button x:Name="GenerateAiButton" Content="產生 AI 解讀" Click="OnGenerateAi" HorizontalAlignment="Left" />
       </StackPanel>
     </Grid>
     <Expander Grid.Row="2" Header="設定" IsExpanded="False">

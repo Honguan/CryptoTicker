@@ -23,6 +23,9 @@ public partial class MainWindow : Window
     private Direction? _lastSignal;
     private readonly DispatcherTimer _analysisTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private bool _analysisRequested;
+    private bool _isRestarting;
+    private bool _isRefreshingAnalysis;
+    private bool _isGeneratingAi;
 
     public MainWindow()
     {
@@ -76,13 +79,28 @@ public partial class MainWindow : Window
 
     private async void OnGenerateAi(object sender, RoutedEventArgs eventArgs)
     {
-        if (_analyses.Count == 0)
+        if (_isGeneratingAi)
         {
-            await RefreshAnalysisAsync();
+            return;
         }
 
-        AiText.Text = "正在產生 AI 解讀…";
-        AiText.Text = await AiAnalysisService.GenerateAsync(_settings, _analyses, CancellationToken.None);
+        _isGeneratingAi = true;
+        UpdateOperationControls();
+        try
+        {
+            if (_analyses.Count == 0)
+            {
+                await RefreshAnalysisAsync();
+            }
+
+            AiText.Text = "正在產生 AI 解讀…";
+            AiText.Text = await AiAnalysisService.GenerateAsync(_settings, _analyses, CancellationToken.None);
+        }
+        finally
+        {
+            _isGeneratingAi = false;
+            UpdateOperationControls();
+        }
     }
 
     private void OnSaveCustomSource(object sender, RoutedEventArgs eventArgs)
@@ -169,61 +187,91 @@ public partial class MainWindow : Window
 
     private async Task RestartAsync()
     {
-        _analyses.Clear();
-        _previousPrice = null;
-        _lastSignal = null;
-        _analysisRequested = false;
-        _watchPrices.Clear();
-        AnalysisList.Items.Clear();
-        _chartValues = [];
-        DrawChart();
-        await _marketData.StartAsync(_settings);
-        await _watchlist.StartAsync(_settings.WatchPairs);
-        StatusText.Text = "正在連線行情來源…";
-        await RefreshAnalysisAsync();
+        if (_isRestarting)
+        {
+            return;
+        }
+
+        _isRestarting = true;
+        UpdateOperationControls();
+        try
+        {
+            _analyses.Clear();
+            _previousPrice = null;
+            _lastSignal = null;
+            _analysisRequested = false;
+            _watchPrices.Clear();
+            AnalysisList.Items.Clear();
+            _chartValues = [];
+            DrawChart();
+            await _marketData.StartAsync(_settings);
+            await _watchlist.StartAsync(_settings.WatchPairs);
+            StatusText.Text = "正在連線行情來源…";
+            await RefreshAnalysisAsync();
+        }
+        finally
+        {
+            _isRestarting = false;
+            UpdateOperationControls();
+        }
     }
 
     private async Task RefreshAnalysisAsync()
     {
-        if (_marketData.Aggregate().Price is null)
+        if (_isRefreshingAnalysis)
         {
-            AnalysisList.Items.Clear();
-            AnalysisList.Items.Add("資料不足，尚未產生分析。");
             return;
         }
 
-        _analysisRequested = true;
-        AnalysisList.Items.Clear();
-        _analyses.Clear();
-        foreach (var timeframe in new[] { "15m", "1h", "4h" })
+        _isRefreshingAnalysis = true;
+        UpdateOperationControls();
+        try
         {
-            try
+            if (_marketData.Aggregate().Price is null)
             {
-                var closes = await CandleService.GetAsync(_settings.Pair, timeframe, CancellationToken.None);
-                var analysis = MarketAnalyzer.Analyze(closes);
-                _analyses[timeframe] = analysis;
-                AnalysisList.Items.Add($"{timeframe}：{DirectionText(analysis.Direction)}｜上漲 {analysis.UpProbability}%｜RSI {analysis.Rsi:F1}");
-                if (timeframe == "1h")
-                {
-                    _chartValues = closes;
-                    _direction = DirectionText(analysis.Direction);
-                    if (_lastSignal is not null && SignalTransition.ShouldNotify(_lastSignal.Value, analysis.Direction))
-                    {
-                        ((App)System.Windows.Application.Current).Notify("技術方向轉換", $"{_settings.Pair}：{DirectionText(analysis.Direction)}");
-                    }
+                AnalysisList.Items.Clear();
+                AnalysisList.Items.Add("資料不足，尚未產生分析。");
+                return;
+            }
 
-                    _lastSignal = analysis.Direction;
-                    AnalysisList.Foreground = BrushForDirection(analysis.Direction);
-                    DrawChart();
+            _analysisRequested = true;
+            AnalysisList.Items.Clear();
+            _analyses.Clear();
+            foreach (var timeframe in new[] { "15m", "1h", "4h" })
+            {
+                try
+                {
+                    var closes = await CandleService.GetAsync(_settings.Pair, timeframe, CancellationToken.None);
+                    var analysis = MarketAnalyzer.Analyze(closes);
+                    _analyses[timeframe] = analysis;
+                    AnalysisList.Items.Add($"{timeframe}：{DirectionText(analysis.Direction)}｜上漲 {analysis.UpProbability}%｜RSI {analysis.Rsi:F1}");
+                    if (timeframe == "1h")
+                    {
+                        _chartValues = closes;
+                        _direction = DirectionText(analysis.Direction);
+                        if (_lastSignal is not null && SignalTransition.ShouldNotify(_lastSignal.Value, analysis.Direction))
+                        {
+                            ((App)System.Windows.Application.Current).Notify("技術方向轉換", $"{_settings.Pair}：{DirectionText(analysis.Direction)}");
+                        }
+
+                        _lastSignal = analysis.Direction;
+                        AnalysisList.Foreground = BrushForDirection(analysis.Direction);
+                        DrawChart();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    AnalysisList.Items.Add($"{timeframe}：分析失敗（{exception.Message}）");
                 }
             }
-            catch (Exception exception)
-            {
-                AnalysisList.Items.Add($"{timeframe}：分析失敗（{exception.Message}）");
-            }
-        }
 
-        UpdateQuote();
+            UpdateQuote();
+        }
+        finally
+        {
+            _isRefreshingAnalysis = false;
+            UpdateOperationControls();
+        }
     }
 
     private void UpdateQuote()
@@ -291,6 +339,13 @@ public partial class MainWindow : Window
                 _watchPrices[snapshot.Pair] = price.Value;
             }
         }
+    }
+
+    private void UpdateOperationControls()
+    {
+        ApplyButton.IsEnabled = !_isRestarting;
+        RefreshAnalysisButton.IsEnabled = !_isRestarting && !_isRefreshingAnalysis;
+        GenerateAiButton.IsEnabled = !_isRestarting && !_isGeneratingAi;
     }
 
     private void LoadCustomSource()
