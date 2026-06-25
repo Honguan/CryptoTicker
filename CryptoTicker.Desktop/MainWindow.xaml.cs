@@ -12,7 +12,9 @@ namespace CryptoTicker.Desktop;
 public partial class MainWindow : Window
 {
     private readonly MarketDataService _marketData = new();
+    private readonly WatchlistService _watchlist = new();
     private readonly Dictionary<string, AnalysisResult> _analyses = new();
+    private readonly Dictionary<string, decimal> _watchPrices = new();
     private readonly DispatcherTimer _displayTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private AppSettings _settings = new();
     private decimal[] _chartValues = [];
@@ -26,6 +28,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _marketData.QuotesChanged += UpdateQuote;
+        _watchlist.QuotesChanged += UpdateQuote;
         _marketData.StatusChanged += status => Dispatcher.BeginInvoke(() => StatusText.Text = status);
         _displayTimer.Tick += (_, _) => UpdateQuote();
         _analysisTimer.Tick += async (_, _) => await RefreshAnalysisAsync();
@@ -39,12 +42,15 @@ public partial class MainWindow : Window
         _displayTimer.Stop();
         _analysisTimer.Stop();
         _marketData.Dispose();
+        _watchlist.Dispose();
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs eventArgs)
     {
         _settings = SettingsStore.Load();
+        _settings.WatchPairs = WatchPairList.Parse(string.Join(',', _settings.WatchPairs), _settings.Pair).ToList();
         PairBox.Text = _settings.Pair;
+        WatchPairsBox.Text = string.Join(',', _settings.WatchPairs);
         AiEndpointBox.Text = _settings.AiEndpoint;
         AiModelBox.Text = _settings.AiModel;
         AiCredentialBox.Text = _settings.AiCredentialTarget;
@@ -60,6 +66,8 @@ public partial class MainWindow : Window
     {
         _settings.Pair = NormalizePair(PairBox.Text);
         PairBox.Text = _settings.Pair;
+        _settings.WatchPairs = WatchPairList.Parse(WatchPairsBox.Text, _settings.Pair).ToList();
+        WatchPairsBox.Text = string.Join(',', _settings.WatchPairs);
         SettingsStore.Save(_settings);
         await RestartAsync();
     }
@@ -165,10 +173,12 @@ public partial class MainWindow : Window
         _previousPrice = null;
         _lastSignal = null;
         _analysisRequested = false;
+        _watchPrices.Clear();
         AnalysisList.Items.Clear();
         _chartValues = [];
         DrawChart();
         await _marketData.StartAsync(_settings);
+        await _watchlist.StartAsync(_settings.WatchPairs);
         StatusText.Text = "正在連線行情來源…";
         await RefreshAnalysisAsync();
     }
@@ -234,6 +244,7 @@ public partial class MainWindow : Window
             var error = source.Health == SourceHealth.Error ? $"：{source.LastError}" : string.Empty;
             SourceList.Items.Add($"{source.Source}｜{SourceHealthText(source.Health)}｜{updatedAt}{error}");
         }
+        RenderWatchList();
         PriceChanged?.Invoke(_settings.Pair, aggregate.Price, _direction, ColorForDirection(_lastSignal ?? Direction.Neutral));
         if (aggregate.Price is decimal price)
         {
@@ -250,6 +261,35 @@ public partial class MainWindow : Window
         if (aggregate.Price is not null && !_analysisRequested)
         {
             _ = RefreshAnalysisAsync();
+        }
+    }
+
+    private void RenderWatchList()
+    {
+        WatchList.Items.Clear();
+        foreach (var snapshot in _watchlist.Snapshots())
+        {
+            var price = snapshot.Aggregate.Price;
+            var previous = _watchPrices.GetValueOrDefault(snapshot.Pair);
+            var direction = price is null || previous == 0 ? "●" : price > previous ? "▲" : price < previous ? "▼" : "●";
+            var color = price is null ? "#6B7280" : price > previous ? _settings.UpColor : price < previous ? _settings.DownColor : "#6B7280";
+            var updatedAt = snapshot.Sources
+                .Where(source => source.LastUpdatedAt is not null)
+                .Select(source => source.LastUpdatedAt!.Value)
+                .DefaultIfEmpty()
+                .Max();
+            var updatedText = updatedAt == default ? "無報價" : updatedAt.ToLocalTime().ToString("HH:mm:ss");
+            var status = price is null ? $"資料不足 {snapshot.Aggregate.ActiveSourceCount}/2" : $"整合 {snapshot.Aggregate.ActiveSourceCount} 個來源";
+            WatchList.Items.Add(new ListBoxItem
+            {
+                Content = $"{direction} {snapshot.Pair}｜{(price is null ? "資料不足" : price.Value.ToString("N4"))}｜{status}｜{updatedText}",
+                Foreground = BrushForColor(color)
+            });
+
+            if (price is not null)
+            {
+                _watchPrices[snapshot.Pair] = price.Value;
+            }
         }
     }
 
@@ -327,8 +367,7 @@ public partial class MainWindow : Window
 
     private static string NormalizePair(string pair)
     {
-        var parts = pair.Trim().ToUpperInvariant().Replace('-', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 2 ? $"{parts[0]}/{parts[1]}" : "BTC/USDT";
+        return WatchPairList.Normalize(pair) ?? "BTC/USDT";
     }
 
     private static string DirectionText(Direction direction) => direction switch
@@ -346,6 +385,8 @@ public partial class MainWindow : Window
         Direction.Down => _settings.DownColor,
         _ => "#6B7280"
     };
+
+    private static System.Windows.Media.Brush BrushForColor(string color) => new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color));
 
     private System.Windows.Media.Brush BrushForDirection(Direction direction) => new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ColorForDirection(direction)));
 

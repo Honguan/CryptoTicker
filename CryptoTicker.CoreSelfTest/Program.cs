@@ -87,6 +87,15 @@ Run("行情解析不受系統地區設定影響", () =>
     Equal(null, parser.GetMethod("Read")!.Invoke(null, ["0"]));
 });
 
+Run("看板交易對清單會正規化去重限制數量並回退", () =>
+{
+    var list = RequiredType("CryptoTicker.Core.WatchPairList");
+    var parse = list.GetMethod("Parse")!;
+    var pairs = (string[])parse.Invoke(null, [" btc-usdt, ETH/USDT,btc/usdt, xrp-usdt,sol-usdt,ada-usdt,doge-usdt ", "BTC/USDT"])!;
+    Equal("BTC/USDT,ETH/USDT,XRP/USDT,SOL/USDT,ADA/USDT,DOGE/USDT", string.Join(',', pairs));
+    Equal("ETH/USDT", string.Join(',', (string[])parse.Invoke(null, ["", "eth-usdt"])!));
+});
+
 Run("來源狀態保留最後有效報價", () =>
 {
     var stateType = RequiredType("CryptoTicker.Core.SourceState");

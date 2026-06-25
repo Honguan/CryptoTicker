@@ -78,6 +78,30 @@ public static class MarketPriceParser
         : null;
 }
 
+public static class WatchPairList
+{
+    public const int MaximumPairs = 6;
+
+    public static string[] Parse(string? value, string fallbackPair)
+    {
+        var pairs = (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Normalize)
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaximumPairs)
+            .ToArray()!;
+
+        return pairs.Length > 0 ? pairs : [Normalize(fallbackPair) ?? "BTC/USDT"];
+    }
+
+    public static string? Normalize(string pair)
+    {
+        var parts = pair.Trim().ToUpperInvariant().Replace('-', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 2 ? $"{parts[0]}/{parts[1]}" : null;
+    }
+}
+
 public static class JsonPathReader
 {
     public static decimal? ReadDecimal(string json, string path)

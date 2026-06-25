@@ -28,8 +28,10 @@
         <TextBlock Text="分析結果" FontWeight="Bold" FontSize="16" />
         <ListBox x:Name="AnalysisList" MinHeight="165" Margin="0,6,0,8" />
         <Button Content="重新整理分析" Click="OnRefreshAnalysis" HorizontalAlignment="Left" />
+        <TextBlock Text="多交易對看板" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
+        <ListBox x:Name="WatchList" Height="110" />
         <TextBlock Text="來源狀態" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
-        <ListBox x:Name="SourceList" Height="100" />
+        <ListBox x:Name="SourceList" Height="80" />
         <TextBlock Text="AI 解讀" FontWeight="Bold" FontSize="16" Margin="0,14,0,4" />
         <TextBox x:Name="AiText" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" Height="130" VerticalScrollBarVisibility="Auto" />
         <Button Content="產生 AI 解讀" Click="OnGenerateAi" HorizontalAlignment="Left" />
@@ -58,6 +60,8 @@
           <ListBox x:Name="AlertList" Height="90" />
         </StackPanel>
         <StackPanel Grid.Column="1">
+          <TextBlock Text="多交易對看板" FontWeight="Bold" />
+          <TextBox x:Name="WatchPairsBox" Margin="0,4" ToolTip="逗號分隔，例如 BTC/USDT,ETH/USDT，最多 6 個" />
           <TextBlock Text="OpenAI 相容 API" FontWeight="Bold" />
           <TextBox x:Name="AiEndpointBox" Margin="0,4" ToolTip="端點或基底網址" />
           <TextBox x:Name="AiModelBox" Margin="0,4" ToolTip="模型名稱" />

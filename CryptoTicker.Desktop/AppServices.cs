@@ -14,6 +14,7 @@ namespace CryptoTicker.Desktop;
 public sealed class AppSettings
 {
     public string Pair { get; set; } = "BTC/USDT";
+    public List<string> WatchPairs { get; set; } = [];
     public List<CustomSourceSettings> CustomSources { get; set; } = [];
     public string AiEndpoint { get; set; } = "";
     public string AiModel { get; set; } = "";
@@ -147,7 +148,7 @@ public sealed class MarketDataService : IDisposable
     public event Action? QuotesChanged;
     public event Action<string>? StatusChanged;
 
-    public Task StartAsync(AppSettings settings)
+    public Task StartAsync(AppSettings settings, bool includeCustomSources = true)
     {
         Dispose();
         _cancellation = new CancellationTokenSource();
@@ -158,7 +159,7 @@ public sealed class MarketDataService : IDisposable
             _sources.TryAdd(exchange, new SourceState(exchange));
             _ = RunExchangeAsync(exchange, pair, token);
         }
-        foreach (var source in settings.CustomSources.Where(source => !string.IsNullOrWhiteSpace(source.Url) && !string.IsNullOrWhiteSpace(source.PricePath)))
+        foreach (var source in includeCustomSources ? settings.CustomSources.Where(source => !string.IsNullOrWhiteSpace(source.Url) && !string.IsNullOrWhiteSpace(source.PricePath)) : Enumerable.Empty<CustomSourceSettings>())
         {
             _sources.TryAdd(source.Name, new SourceState(source.Name));
             _ = RunCustomSourceAsync(source, token);
@@ -342,6 +343,54 @@ public sealed class MarketDataService : IDisposable
             "Bybit" when document.RootElement.TryGetProperty("data", out var bybit) && bybit.TryGetProperty("lastPrice", out var last) => MarketPriceParser.Read(last.GetString()),
             _ => null
         };
+    }
+}
+
+public sealed record WatchPairSnapshot(string Pair, AggregationResult Aggregate, IReadOnlyList<SourceSnapshot> Sources);
+
+public sealed class WatchlistService : IDisposable
+{
+    private readonly ConcurrentDictionary<string, MarketDataService> _services = new();
+    private string[] _pairs = [];
+
+    public event Action? QuotesChanged;
+
+    public async Task StartAsync(IEnumerable<string> pairs)
+    {
+        Dispose();
+        _pairs = pairs.Take(WatchPairList.MaximumPairs).ToArray();
+        foreach (var pair in _pairs)
+        {
+            var service = new MarketDataService();
+            service.QuotesChanged += () => QuotesChanged?.Invoke();
+            _services[pair] = service;
+            await service.StartAsync(new AppSettings { Pair = pair }, includeCustomSources: false);
+        }
+    }
+
+    public IReadOnlyList<WatchPairSnapshot> Snapshots()
+    {
+        var snapshots = new List<WatchPairSnapshot>();
+        foreach (var pair in _pairs)
+        {
+            if (_services.TryGetValue(pair, out var service))
+            {
+                snapshots.Add(new WatchPairSnapshot(pair, service.Aggregate(), service.Sources()));
+            }
+        }
+
+        return snapshots;
+    }
+
+    public void Dispose()
+    {
+        foreach (var service in _services.Values)
+        {
+            service.Dispose();
+        }
+
+        _services.Clear();
+        _pairs = [];
     }
 }
 
