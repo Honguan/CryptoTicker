@@ -293,33 +293,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DrawChart()
-    {
-        ChartCanvas.Children.Clear();
-        if (_chartValues.Length < 2 || ChartCanvas.ActualWidth <= 0 || ChartCanvas.ActualHeight <= 0)
-        {
-            return;
-        }
-
-        var minimum = _chartValues.Min();
-        var maximum = _chartValues.Max();
-        var range = maximum - minimum;
-        if (range == 0)
-        {
-            range = 1;
-        }
-
-        var line = new Polyline { Stroke = System.Windows.Media.Brushes.DodgerBlue, StrokeThickness = 2 };
-        for (var index = 0; index < _chartValues.Length; index++)
-        {
-            var x = index * ChartCanvas.ActualWidth / (_chartValues.Length - 1);
-            var y = ChartCanvas.ActualHeight - (double)((_chartValues[index] - minimum) / range) * ChartCanvas.ActualHeight;
-            line.Points.Add(new System.Windows.Point(x, y));
-        }
-
-        ChartCanvas.Children.Add(line);
-    }
-
     private void LoadCustomSource()
     {
         var source = _settings.CustomSources.FirstOrDefault();
@@ -345,26 +318,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void PickColor(bool up)
-    {
-        using var dialog = new Forms.ColorDialog();
-        if (dialog.ShowDialog() != Forms.DialogResult.OK)
-        {
-            return;
-        }
-
-        var color = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
-        if (up) _settings.UpColor = color; else _settings.DownColor = color;
-        SettingsStore.Save(_settings);
-        ApplyColors();
-    }
-
-    private void ApplyColors()
-    {
-        UpColorButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(_settings.UpColor));
-        DownColorButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(_settings.DownColor));
-    }
-
     private static string NormalizePair(string pair)
     {
         return WatchPairList.Normalize(pair) ?? "BTC/USDT";
@@ -378,17 +331,6 @@ public partial class MainWindow : Window
     };
 
     private static string AlertText(PriceAlert alert) => alert.Direction == AlertDirection.Above ? "上破" : "下破";
-
-    private string ColorForDirection(Direction direction) => direction switch
-    {
-        Direction.Up => _settings.UpColor,
-        Direction.Down => _settings.DownColor,
-        _ => "#6B7280"
-    };
-
-    private static System.Windows.Media.Brush BrushForColor(string color) => new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color));
-
-    private System.Windows.Media.Brush BrushForDirection(Direction direction) => new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ColorForDirection(direction)));
 
     private static string SourceHealthText(SourceHealth health) => health switch
     {

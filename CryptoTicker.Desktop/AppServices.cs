@@ -1,143 +1,13 @@
 using System.Collections.Concurrent;
-using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.WebSockets;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using CryptoTicker.Core;
 
 namespace CryptoTicker.Desktop;
-
-public sealed class AppSettings
-{
-    public string Pair { get; set; } = "BTC/USDT";
-    public List<string> WatchPairs { get; set; } = [];
-    public List<CustomSourceSettings> CustomSources { get; set; } = [];
-    public string AiEndpoint { get; set; } = "";
-    public string AiModel { get; set; } = "";
-    public string AiCredentialTarget { get; set; } = "CryptoTicker.AI";
-    public List<PriceAlert> Alerts { get; set; } = [];
-    public string UpColor { get; set; } = "#16A34A";
-    public string DownColor { get; set; } = "#DC2626";
-}
-
-public sealed class CustomSourceSettings
-{
-    public string Name { get; set; } = "";
-    public string Url { get; set; } = "";
-    public string PricePath { get; set; } = "";
-    public string TimestampPath { get; set; } = "";
-    public string SecretHeaderName { get; set; } = "";
-    public string CredentialTarget { get; set; } = "";
-}
-
-public static class SettingsStore
-{
-    private static readonly string Path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CryptoTicker", "settings.json");
-
-    public static AppSettings Load()
-    {
-        try
-        {
-            return File.Exists(Path) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(Path)) ?? new AppSettings() : new AppSettings();
-        }
-        catch (JsonException)
-        {
-            return new AppSettings();
-        }
-    }
-
-    public static void Save(AppSettings settings)
-    {
-        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        File.WriteAllText(Path, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
-    }
-}
-
-public static class CredentialStore
-{
-    private const int GenericCredential = 1;
-    private const int LocalMachinePersistence = 2;
-
-    public static void Save(string target, string secret)
-    {
-        if (string.IsNullOrWhiteSpace(target) || string.IsNullOrEmpty(secret))
-        {
-            return;
-        }
-
-        var bytes = Encoding.Unicode.GetBytes(secret);
-        var pointer = Marshal.AllocCoTaskMem(bytes.Length);
-        try
-        {
-            Marshal.Copy(bytes, 0, pointer, bytes.Length);
-            var credential = new NativeCredential
-            {
-                Type = GenericCredential,
-                TargetName = target,
-                CredentialBlobSize = (uint)bytes.Length,
-                CredentialBlob = pointer,
-                Persist = LocalMachinePersistence,
-                UserName = target
-            };
-            if (!CredWrite(ref credential, 0))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-        }
-        finally
-        {
-            Marshal.FreeCoTaskMem(pointer);
-        }
-    }
-
-    public static string? Read(string target)
-    {
-        if (string.IsNullOrWhiteSpace(target) || !CredRead(target, GenericCredential, 0, out var pointer))
-        {
-            return null;
-        }
-
-        try
-        {
-            var credential = Marshal.PtrToStructure<NativeCredential>(pointer);
-            return credential.CredentialBlobSize == 0 ? null : Marshal.PtrToStringUni(credential.CredentialBlob, (int)credential.CredentialBlobSize / 2);
-        }
-        finally
-        {
-            CredFree(pointer);
-        }
-    }
-
-    [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool CredWrite([In] ref NativeCredential credential, uint flags);
-
-    [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool CredRead(string target, int type, int flags, out IntPtr credential);
-
-    [DllImport("Advapi32.dll", SetLastError = true)]
-    private static extern void CredFree(IntPtr credential);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct NativeCredential
-    {
-        public uint Flags;
-        public uint Type;
-        public string TargetName;
-        public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-        public uint CredentialBlobSize;
-        public IntPtr CredentialBlob;
-        public uint Persist;
-        public uint AttributeCount;
-        public IntPtr Attributes;
-        public string TargetAlias;
-        public string UserName;
-    }
-}
 
 public sealed class MarketDataService : IDisposable
 {
@@ -343,54 +213,6 @@ public sealed class MarketDataService : IDisposable
             "Bybit" when document.RootElement.TryGetProperty("data", out var bybit) && bybit.TryGetProperty("lastPrice", out var last) => MarketPriceParser.Read(last.GetString()),
             _ => null
         };
-    }
-}
-
-public sealed record WatchPairSnapshot(string Pair, AggregationResult Aggregate, IReadOnlyList<SourceSnapshot> Sources);
-
-public sealed class WatchlistService : IDisposable
-{
-    private readonly ConcurrentDictionary<string, MarketDataService> _services = new();
-    private string[] _pairs = [];
-
-    public event Action? QuotesChanged;
-
-    public async Task StartAsync(IEnumerable<string> pairs)
-    {
-        Dispose();
-        _pairs = pairs.Take(WatchPairList.MaximumPairs).ToArray();
-        foreach (var pair in _pairs)
-        {
-            var service = new MarketDataService();
-            service.QuotesChanged += () => QuotesChanged?.Invoke();
-            _services[pair] = service;
-            await service.StartAsync(new AppSettings { Pair = pair }, includeCustomSources: false);
-        }
-    }
-
-    public IReadOnlyList<WatchPairSnapshot> Snapshots()
-    {
-        var snapshots = new List<WatchPairSnapshot>();
-        foreach (var pair in _pairs)
-        {
-            if (_services.TryGetValue(pair, out var service))
-            {
-                snapshots.Add(new WatchPairSnapshot(pair, service.Aggregate(), service.Sources()));
-            }
-        }
-
-        return snapshots;
-    }
-
-    public void Dispose()
-    {
-        foreach (var service in _services.Values)
-        {
-            service.Dispose();
-        }
-
-        _services.Clear();
-        _pairs = [];
     }
 }
 
